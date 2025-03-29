@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import dlib
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap
@@ -10,6 +11,13 @@ class RecognitionPage(QWidget):
         self.main_window = main_window
         self.init_ui()
         self.setup_camera()
+        self.setup_face_detector()
+        
+    def setup_face_detector(self):
+        # 加载dlib的人脸检测器和预测器
+        self.detector = dlib.get_frontal_face_detector()
+        predictor_path = "shape_predictor_68_face_landmarks.dat"
+        self.predictor = dlib.shape_predictor(predictor_path)
 
     def init_ui(self):
         layout = QHBoxLayout(self)
@@ -80,9 +88,10 @@ class RecognitionPage(QWidget):
         layout.addLayout(right_layout, stretch=1)
 
         self.captured_frame = None
+        self.landmarks = None
 
     def setup_camera(self):
-        self.camera = cv2.VideoCapture(0)
+        self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(30)  # 30ms 刷新率
@@ -90,6 +99,21 @@ class RecognitionPage(QWidget):
     def update_frame(self):
         ret, frame = self.camera.read()
         if ret:
+            # 实时人脸检测
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.detector(gray)
+            
+            # 绘制人脸框和关键点
+            for face in faces:
+                x, y, w, h = (face.left(), face.top(), face.width(), face.height())
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                
+                landmarks = self.predictor(gray, face)
+                for n in range(68):
+                    x = landmarks.part(n).x
+                    y = landmarks.part(n).y
+                    cv2.circle(frame, (x, y), 3, (0, 0, 255), -1)
+            
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w, ch = frame.shape
             bytes_per_line = ch * w
@@ -101,6 +125,17 @@ class RecognitionPage(QWidget):
         ret, frame = self.camera.read()
         if ret:
             self.captured_frame = frame
+            # 进行人脸检测和关键点提取
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.detector(gray)
+            if len(faces) > 0:
+                self.landmarks = self.predictor(gray, faces[0])
+                # 在图像上绘制关键点
+                for n in range(68):
+                    x = self.landmarks.part(n).x
+                    y = self.landmarks.part(n).y
+                    cv2.circle(frame, (x, y), 3, (0, 0, 255), -1)
+            
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w, ch = frame_rgb.shape
             bytes_per_line = ch * w
@@ -118,12 +153,36 @@ class RecognitionPage(QWidget):
             self.main_window.set_captured_image(frame)
 
     def start_recognition(self):
-        if self.captured_frame is not None:
-            # TODO: 实现物体识别逻辑
-            x, y = np.random.randint(0, 100, 2)
-            self.result_label.setText(f"识别结果:\n物体坐标: ({x}, {y})")
+        if self.captured_frame is not None and self.landmarks is not None:
+            # 提取关键点坐标
+            result_text = "人脸关键点坐标：\n"
+            
+            # 眼睛坐标
+            left_eye = ((self.landmarks.part(36).x + self.landmarks.part(39).x) // 2,
+                       (self.landmarks.part(36).y + self.landmarks.part(39).y) // 2)
+            right_eye = ((self.landmarks.part(42).x + self.landmarks.part(45).x) // 2,
+                        (self.landmarks.part(42).y + self.landmarks.part(45).y) // 2)
+            result_text += f"左眼中心: ({left_eye[0]}, {left_eye[1]})\n"
+            result_text += f"右眼中心: ({right_eye[0]}, {right_eye[1]})\n"
+            
+            # 鼻子坐标
+            nose = (self.landmarks.part(30).x, self.landmarks.part(30).y)
+            result_text += f"鼻尖: ({nose[0]}, {nose[1]})\n"
+            
+            # 嘴巴坐标
+            mouth_left = (self.landmarks.part(48).x, self.landmarks.part(48).y)
+            mouth_right = (self.landmarks.part(54).x, self.landmarks.part(54).y)
+            mouth_center = ((mouth_left[0] + mouth_right[0]) // 2,
+                          (mouth_left[1] + mouth_right[1]) // 2)
+            result_text += f"嘴巴中心: ({mouth_center[0]}, {mouth_center[1]})\n"
+            
+            # 下巴坐标
+            chin = (self.landmarks.part(8).x, self.landmarks.part(8).y)
+            result_text += f"下巴: ({chin[0]}, {chin[1]})"
+            
+            self.result_label.setText(result_text)
         else:
-            self.result_label.setText("请先捕获图像")
+            self.result_label.setText("请先捕获包含人脸的图像")
 
     def closeEvent(self, event):
         self.camera.release()
