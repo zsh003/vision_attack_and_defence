@@ -36,22 +36,41 @@ class AttackPage(QWidget):
 
         # 中间控制区域
         middle_layout = QVBoxLayout()
-        self.generate_btn = QPushButton("生成对抗样本")
-        self.generate_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 16px;
-                background-color: #FF5722;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 10px 20px;
-            }
-            QPushButton:hover {
-                background-color: #F4511E;
-            }
-        """)
-        self.generate_btn.clicked.connect(self.generate_adversarial)
-        middle_layout.addWidget(self.generate_btn)
+        
+        # 定义7个不同的对抗样本生成按钮
+        self.generate_buttons = []
+        button_styles = [
+            (0, 0.75, "self.original_image.shape"),  # 演示最佳
+            (0, 0.85, "self.original_image.shape"),  # 轻微噪声
+            (0, 1, "self.original_image.shape"),     # 中等噪声
+            (0, 2, "self.original_image.shape"),     # 较强噪声
+            (0, 5, 2),                            # 局部噪声
+            (0, 100, 2),                          # 强局部噪声
+            (20, 50, 2)                           # 偏移噪声
+        ]
+        
+        for i, (mean, std, shape) in enumerate(button_styles, 1):
+            btn = QPushButton(f"生成对抗样本{i}")
+            btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 16px;
+                    background-color: #FF5722;
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 10px 20px;
+                    margin: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #F4511E;
+                }
+            """)
+            # 使用lambda函数保存参数
+            btn.clicked.connect(lambda checked, m=mean, s=std, sh=shape: 
+                              self.generate_adversarial(m, s, sh))
+            middle_layout.addWidget(btn)
+            self.generate_buttons.append(btn)
+        
         middle_layout.addStretch()
 
         # 右侧对抗样本显示区域
@@ -98,20 +117,21 @@ class AttackPage(QWidget):
     
     def start_recognition(self):
         if self.adversarial_image is not None:
-            
             try:
                 # 对对抗样本进行人脸检测和关键点提取
                 gray = cv2.cvtColor(self.adversarial_image, cv2.COLOR_BGR2GRAY)
                 faces = self.detector(gray)
                 if len(faces) > 0:
                     self.adversarial_landmarks = self.predictor(gray, faces[0])
+                else:
+                    raise Exception("无法识别到样本人脸")
 
                 # 显示对抗样本识别结果
                 self.display_landmarks(self.adversarial_landmarks, self.adversarial_result_label)
                 # 计算并显示误差分析
                 self.calculate_error()
-            except:
-                self.adversarial_result_label.setText("对抗样本无法识别")
+            except Exception:
+                self.adversarial_result_label.setText("无法识别到样本人脸")
                 self.error_analysis_label.setText("")
             
         else:
@@ -138,30 +158,36 @@ class AttackPage(QWidget):
         else:
             self.original_result_label.setText("请先在识别页面捕获图像")
 
-    def generate_adversarial(self):
+    def generate_adversarial(self, mean, std, shape_str):
         if self.original_image is not None and self.original_landmarks is not None:
             # 生成对抗样本
-
-            # 直接在原图上添加噪声
             self.adversarial_image = self.original_image.copy()
-            #noise = np.random.normal(0, 25, self.original_image.shape).astype(np.uint8) # 识别不到人脸
-            #noise = np.random.normal(0, 5, 2).astype(np.uint8) # 误差很小 1像素
-            #noise = np.random.normal(0, 25, 2).astype(np.uint8) # 误差很小 1像素
-            #noise = np.random.normal(0, 100, 2).astype(np.uint8) # 误差稍小 3-4像素 效果可以
-            #noise = np.random.normal(20, 50, 2).astype(np.uint8) # 这个效果也可以
-            noise = np.random.normal(0, 0.75, self.original_image.shape).astype(np.uint8) # 演示最佳，scale=1会有点模糊了
-
-            print(self.original_image.shape)
-
-            self.adversarial_image = cv2.add(self.adversarial_image, noise)
-
-            #在关键点周围添加扰动
-            # for n in range(68):
-            #     x = self.original_landmarks.part(n).x
-            #     y = self.original_landmarks.part(n).y
-            #     # 在关键点周围添加随机扰动
-            #     noise = np.random.normal(0, 5, 2).astype(np.int32)
-            #     cv2.circle(self.adversarial_image, (x + noise[0], y + noise[1]), 2, (0, 0, 255), -1)
+            
+            # 根据shape_str确定噪声形状
+            if shape_str == "self.original_image.shape":
+                shape = self.original_image.shape
+            else:
+                shape = eval(shape_str)
+            
+            # 生成噪声
+            noise = np.random.normal(mean, std, shape).astype(np.uint8)
+            
+            # 如果噪声形状是2，则只在关键点周围添加噪声
+            if shape == 2:
+                # 获取所有关键点坐标
+                landmarks = []
+                for i in range(68):
+                    x = self.original_landmarks.part(i).x
+                    y = self.original_landmarks.part(i).y
+                    landmarks.append((x, y))
+                
+                # 在关键点周围添加噪声
+                for x, y in landmarks:
+                    if 0 <= x < self.adversarial_image.shape[1] and 0 <= y < self.adversarial_image.shape[0]:
+                        self.adversarial_image[y, x] = cv2.add(self.adversarial_image[y, x], noise)
+            else:
+                # 全局添加噪声
+                self.adversarial_image = cv2.add(self.adversarial_image, noise)
             
             # 显示对抗样本
             frame_rgb = cv2.cvtColor(self.adversarial_image, cv2.COLOR_BGR2RGB)
