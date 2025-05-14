@@ -51,6 +51,17 @@ last_y = 90
 last_s1 = 90
 last_s2 = 90
 
+# 动作检测参数
+NOD_THRESHOLD = 0.10  # 点头阈值（归一化值的变化量）
+SHAKE_THRESHOLD = 0.15  # 摇头阈值（归一化值的变化量）
+NOD_COOLDOWN = 15     # 点头检测冷却时间（帧数）
+last_gesture = None
+gesture_cooldown = 0
+# 鼻尖位置追踪
+nose_y_history = []
+nose_x_history = []
+HISTORY_SIZE = 8  # 历史记录长度
+
 def control_servo(s1, s2):
     global last_s1, last_s2
     if last_s1 != int(s1) or last_s2 != int(s2):
@@ -59,16 +70,41 @@ def control_servo(s1, s2):
         bot.set_pwm_servo_all(last_s1, last_s2)
 
 def servo_nod(s1, s2):
-
     time.sleep_ms(50)
     bot.set_pwm_servo_all(s1, s2)
     time.sleep_ms(50)
-    angle = 20
+    angle = 30
     for i in range(2):
         bot.set_pwm_servo_all(s1, s2 + angle)
         time.sleep_ms(300)
-        bot.set_pwm_servo_all(s1, s2 - angle)
+        bot.set_pwm_servo_all(s1, s2)
         time.sleep_ms(500)
+    print("Nod action execute!")
+
+def servo_left_swerve(s1, s2):
+    time.sleep_ms(50)
+    bot.set_pwm_servo_all(s1, s2)
+    time.sleep_ms(50)
+    angle = 30
+    for i in range(2):
+        bot.set_pwm_servo_all(s1 - angle, s2)
+        time.sleep_ms(300)
+        bot.set_pwm_servo_all(s1, s2)
+        time.sleep_ms(500)
+    print("Left swerve action execute!")
+
+def servo_right_swerve(s1, s2):
+    time.sleep_ms(50)
+    bot.set_pwm_servo_all(s1, s2)
+    time.sleep_ms(50)
+    angle = 30
+    for i in range(2):
+        bot.set_pwm_servo_all(s1 + angle, s2)
+        time.sleep_ms(300)
+        bot.set_pwm_servo_all(s1, s2)
+        time.sleep_ms(500)
+    print("Right swerve action execute!")
+
 
 def extend_box(x, y, w, h, scale):
     x1_t = x - scale*w
@@ -83,47 +119,191 @@ def extend_box(x, y, w, h, scale):
     cut_img_h = y2-y1+1
     return x1, y1, cut_img_w, cut_img_h
 
+def analyze_gestures(landmarks):
+    global nose_y_history, nose_x_history
+    # 检测点头动作
+    # 第30点为鼻尖
+    nose_y = landmarks[30*2+1]  # 归一化值（上下方向）
+    nose_x = landmarks[30*2]    # 归一化值（左右方向）
+    print("nose_y:", nose_y, "nose_x:", nose_x)
 
-while True:
-    gc.collect()
-    clock.tick()
-    img = sensor.snapshot()
-    kpu.run_with_output(img)
-    dect = kpu.regionlayer_yolo2()
-    fps = clock.fps()
-    if len(dect) > 0:
-        for face in dect :
-            pass
-        x1, y1, cut_img_w, cut_img_h = extend_box(face[0], face[1], face[2], face[3], scale=0.08) # 扩大人脸框
-        face_cut = img.cut(x1, y1, cut_img_w, cut_img_h)
-        a = img.draw_rectangle(face[0],face[1],face[2],face[3], color=(0, 255, 0))
-        face_cut_128 = face_cut.resize(128, 128)
-        face_cut_128.pix_to_ai()
-        out = lm68_kpu.run_with_output(face_cut_128, getlist=True)
-        face_x = face[0] + face[2]//2
-        face_y = face[1] + face[3]//2
-        value_x = PID_x.incremental(face_x)
-        value_y = -PID_y.incremental(face_y)
-        if -1 < value_x < 1: value_x = 0
-        if -1 < value_y < 1: value_y = 0
-        last_x = last_x + value_x
-        last_y = last_y + value_y
-        control_servo(last_x, last_y)
-        print("value:", last_x, last_y)
-        for j in range(68):
-            x = int(KPU.sigmoid(out[2 * j])*cut_img_w + x1)
-            y = int(KPU.sigmoid(out[2 * j + 1])*cut_img_h + y1)
-            #a = img.draw_cross(x, y, size=1, color=(0, 0, 255))
-            a = img.draw_circle(x, y, 2, color=(0, 0, 255), fill=True)
-        del (face_cut_128)
-        del (face_cut)
+    # 更新鼻尖位置历史
+    nose_y_history.append(nose_y)
+    nose_x_history.append(nose_x)
 
-        servo_nod(last_x, last_y)
+    if len(nose_y_history) > HISTORY_SIZE:
+        nose_y_history.pop(0)
+    if len(nose_x_history) > HISTORY_SIZE:
+        nose_x_history.pop(0)
 
-    img.draw_string(0, 0, "%2.1ffps" %(fps), color=(0, 60, 255), scale=2.0)
-    lcd.display(img)
-    gc.collect()
+    # 至少需要有足够的历史数据才能判断动作
+    if len(nose_y_history) < 4 or len(nose_x_history) < 4:
+        return None
 
-kpu.deinit()
-lm68_kpu.deinit()
+    # 检测点头动作（上下运动）
+    nod_result = detect_nod()
+    if nod_result:
+        return nod_result
+
+    # 检测摇头动作（左右运动）
+    shake_result = detect_shake()
+    if shake_result:
+        return shake_result
+
+    return None
+
+def detect_nod():
+    global nose_y_history, nose_x_history
+    # 对数据进行平滑处理
+    smoothed_y = []
+    for i in range(1, len(nose_y_history)):
+        # 简单的移动平均
+        avg = (nose_y_history[i] + nose_y_history[i-1]) / 2
+        smoothed_y.append(avg)
+
+    # 计算平滑后数据的变化量
+    y_changes = [smoothed_y[i] - smoothed_y[i-1] for i in range(1, len(smoothed_y))]
+
+    # 检测点头模式：y值先明显增加（低头）然后明显减少（抬头）
+    # 先找到最大增加和最大减少
+    max_increase = max(y_changes) if y_changes else 0
+    min_decrease = min(y_changes) if y_changes else 0
+
+    # 判断是否满足点头条件
+    is_nod = (max_increase > NOD_THRESHOLD and min_decrease < -NOD_THRESHOLD and
+             abs(max_increase) + abs(min_decrease) > NOD_THRESHOLD * 3)
+
+    if is_nod:
+        print("Nod detected! Changes:", y_changes)
+        print("Max increase:", max_increase, "Min decrease:", min_decrease)
+        nose_x_history = [] # 清空历史记录 以增加下一次检测准确性
+        nose_y_history = []
+        return 'nod'
+
+    return None
+
+def detect_shake():
+    global nose_y_history, nose_x_history
+    # 对数据进行平滑处理
+    smoothed_x = []
+    for i in range(1, len(nose_x_history)):
+        # 简单的移动平均
+        avg = (nose_x_history[i] + nose_x_history[i-1]) / 2
+        smoothed_x.append(avg)
+
+    # 计算平滑后数据的变化量
+    x_changes = [smoothed_x[i] - smoothed_x[i-1] for i in range(1, len(smoothed_x))]
+
+    # 检测左右摇头模式
+    # 计算最大的左右变化
+    max_right = max(x_changes) if x_changes else 0  # 正值，向右移动
+    max_left = min(x_changes) if x_changes else 0   # 负值，向左移动
+
+    # 判断是否为向左摇头（先向左再向右）
+    is_left_shake = (max_left < -SHAKE_THRESHOLD and max_right > SHAKE_THRESHOLD and
+                    abs(max_left) + abs(max_right) > SHAKE_THRESHOLD * 3)
+
+    # 判断是否为向右摇头（先向右再向左）
+    is_right_shake = (max_right > SHAKE_THRESHOLD and max_left < -SHAKE_THRESHOLD and
+                    abs(max_right) + abs(max_left) > SHAKE_THRESHOLD * 3)
+
+    # 分析摇头的方向
+    if is_left_shake:
+        # 检查最大左移发生在最大右移之前
+        left_idx = x_changes.index(max_left)
+        right_idx = x_changes.index(max_right)
+
+        if left_idx < right_idx:
+            print("Left shake detected! Changes:", x_changes)
+            print("Max left:", max_left, "Max right:", max_right)
+            nose_x_history = [] # 清空历史记录 以增加下一次检测准确性
+            nose_y_history = []
+            return 'left_shake'
+
+    if is_right_shake:
+        # 检查最大右移发生在最大左移之前
+        left_idx = x_changes.index(max_left)
+        right_idx = x_changes.index(max_right)
+
+        if right_idx < left_idx:
+            print("Right shake detected! Changes:", x_changes)
+            print("Max right:", max_right, "Max left:", max_left)
+            nose_x_history = [] # 清空历史记录 以增加下一次检测准确性
+            nose_y_history = []
+            return 'right_shake'
+
+    return None
+
+try:
+    while True:
+        gc.collect()
+        clock.tick()
+        img = sensor.snapshot()
+        kpu.run_with_output(img)
+        dect = kpu.regionlayer_yolo2()
+        fps = clock.fps()
+        gesture = None
+
+        if len(dect) > 0:
+            for face in dect :
+                pass
+            x1, y1, cut_img_w, cut_img_h = extend_box(face[0], face[1], face[2], face[3], scale=0.08) # 扩大人脸框
+            face_cut = img.cut(x1, y1, cut_img_w, cut_img_h)
+            a = img.draw_rectangle(face[0],face[1],face[2],face[3], color=(0, 255, 0))
+            face_cut_128 = face_cut.resize(128, 128)
+            face_cut_128.pix_to_ai()
+            out = lm68_kpu.run_with_output(face_cut_128, getlist=True)
+            face_x = face[0] + face[2]//2
+            face_y = face[1] + face[3]//2
+            value_x = PID_x.incremental(face_x)
+            value_y = -PID_y.incremental(face_y)
+            if -1 < value_x < 1: value_x = 0
+            if -1 < value_y < 1: value_y = 0
+            last_x = last_x + value_x
+            last_y = last_y + value_y
+            control_servo(last_x, last_y)
+            #print("value:", last_x, last_y)
+
+            # 分析动作手势
+            gesture = analyze_gestures(out)
+
+            for j in range(68):
+                x = int(KPU.sigmoid(out[2 * j])*cut_img_w + x1)
+                y = int(KPU.sigmoid(out[2 * j + 1])*cut_img_h + y1)
+                #a = img.draw_cross(x, y, size=1, color=(0, 0, 255))
+                a = img.draw_circle(x, y, 2, color=(0, 0, 255), fill=True)
+            del (face_cut_128)
+            del (face_cut)
+
+            # 根据检测到的手势执行动作
+            if gesture and gesture != last_gesture and gesture_cooldown == 0:
+                print("===========================GESTURE DETECTED=========================")
+                print("Detected gesture:", gesture)
+                bot.set_beep(20)
+
+                if gesture == 'nod':
+                    servo_nod(last_x, last_y)
+                elif gesture == 'left_shake':
+                    servo_left_swerve(last_x, last_y)
+                elif gesture == 'right_shake':
+                    servo_right_swerve(last_x, last_y)
+
+                # 设置冷却时间，避免连续触发
+                gesture_cooldown = NOD_COOLDOWN
+            last_gesture = gesture
+            gesture = None
+
+        img.draw_string(0, 0, "%2.1ffps" %(fps), color=(0, 60, 255), scale=2.0)
+        if gesture:
+            img.draw_string(0, 20, "Gesture: %s" %(gesture), color=(255, 0, 0), scale=2.0)
+        lcd.display(img)
+
+        # 冷却时间递减
+        if gesture_cooldown > 0:
+            gesture_cooldown -= 1
+
+        gc.collect()
+except:
+    kpu.deinit()
+    lm68_kpu.deinit()
 
