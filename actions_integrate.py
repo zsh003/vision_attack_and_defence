@@ -194,43 +194,88 @@ def detect_shake():
     # 计算平滑后数据的变化量
     x_changes = [smoothed_x[i] - smoothed_x[i-1] for i in range(1, len(smoothed_x))]
 
-    # 检测左右摇头模式
-    # 计算最大的左右变化
-    max_right = max(x_changes) if x_changes else 0  # 正值，向右移动
-    max_left = min(x_changes) if x_changes else 0   # 负值，向左移动
+    if not x_changes:
+        return None
 
-    # 判断是否为向左摇头（先向左再向右）
-    is_left_shake = (max_left < -SHAKE_THRESHOLD and max_right > SHAKE_THRESHOLD and
-                    abs(max_left) + abs(max_right) > SHAKE_THRESHOLD * 3)
+    # 检测是否存在足够大的水平移动
+    max_right = max(x_changes)  # 正值，向右移动
+    max_left = min(x_changes)   # 负值，向左移动
 
-    # 判断是否为向右摇头（先向右再向左）
-    is_right_shake = (max_right > SHAKE_THRESHOLD and max_left < -SHAKE_THRESHOLD and
-                    abs(max_right) + abs(max_left) > SHAKE_THRESHOLD * 3)
+    # 首先判断幅度是否足够大
+    if abs(max_left) < SHAKE_THRESHOLD or abs(max_right) < SHAKE_THRESHOLD:
+        return None  # 变化不够明显
 
-    # 分析摇头的方向
-    if is_left_shake:
-        # 检查最大左移发生在最大右移之前
-        left_idx = x_changes.index(max_left)
-        right_idx = x_changes.index(max_right)
+    # 计算整体趋势，判断主要运动方向
+    # 将变化分为三类：明显向左、明显向右、微小变化
+    left_moves = [x for x in x_changes if x < -SHAKE_THRESHOLD * 0.5]
+    right_moves = [x for x in x_changes if x > SHAKE_THRESHOLD * 0.5]
 
-        if left_idx < right_idx:
-            print("Left shake detected! Changes:", x_changes)
-            print("Max left:", max_left, "Max right:", max_right)
-            nose_x_history = [] # 清空历史记录 以增加下一次检测准确性
-            nose_y_history = []
-            return 'left_shake'
+    # 检查是否有足够的相对方向变化
+    if not left_moves or not right_moves:
+        return None
 
-    if is_right_shake:
-        # 检查最大右移发生在最大左移之前
-        left_idx = x_changes.index(max_left)
-        right_idx = x_changes.index(max_right)
+    # 计算初始方向：观察前半部分数据的趋势
+    first_half = x_changes[:len(x_changes)//2]
+    first_left = [x for x in first_half if x < -SHAKE_THRESHOLD * 0.5]
+    first_right = [x for x in first_half if x > SHAKE_THRESHOLD * 0.5]
 
-        if right_idx < left_idx:
-            print("Right shake detected! Changes:", x_changes)
-            print("Max right:", max_right, "Max left:", max_left)
-            nose_x_history = [] # 清空历史记录 以增加下一次检测准确性
-            nose_y_history = []
-            return 'right_shake'
+    # 通过首个明显移动的方向判断
+    initial_move_idx = -1
+    initial_direction = "none"
+
+    for i, change in enumerate(x_changes):
+        if abs(change) > SHAKE_THRESHOLD * 0.7:
+            initial_move_idx = i
+            initial_direction = "left" if change > 0 else "right"
+            break
+
+    if initial_direction == "none":
+        return None
+
+    # 尝试检测方向变化次数
+    direction_changes = 0
+    last_dir = initial_direction
+    for change in x_changes[initial_move_idx+1:]:
+        if abs(change) < SHAKE_THRESHOLD * 0.5:  # 忽略微小变化
+            continue
+
+        current_dir = "left" if change > 0 else "right"
+        if current_dir != last_dir:
+            direction_changes += 1
+            last_dir = current_dir
+
+    # 判断是否完成摇头动作（至少有一次方向变化）
+    if direction_changes < 1:
+        return None
+
+    # 分析最明显的幅度变化
+    abs_max_left = abs(max_left)
+    abs_max_right = abs(max_right)
+
+    # 计算总体偏移量（所有左变化和右变化的累加）
+    sum_left = sum(left_moves)
+    sum_right = sum(right_moves)
+
+    # 调试输出
+    print("Initial direction:", initial_direction)
+    print("Direction changes:", direction_changes)
+    print("Total left movement:", sum_left)
+    print("Total right movement:", sum_right)
+
+    # 根据初始方向和累积变化判断摇头类型
+    if initial_direction == "left" and abs_max_left > abs_max_right * 0.7:
+        print("Left shake detected! Changes:", x_changes)
+        print("Max left:", max_left, "Max right:", max_right)
+        nose_x_history = [] # 清空历史记录 以增加下一次检测准确性
+        nose_y_history = []
+        return 'left_shake'
+
+    if initial_direction == "right" and abs_max_right > abs_max_left * 0.7:
+        print("Right shake detected! Changes:", x_changes)
+        print("Max right:", max_right, "Max left:", max_left)
+        nose_x_history = [] # 清空历史记录 以增加下一次检测准确性
+        nose_y_history = []
+        return 'right_shake'
 
     return None
 

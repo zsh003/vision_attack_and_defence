@@ -124,19 +124,17 @@ class RecognitionPage(QWidget):
     def capture_frame(self):
         ret, frame = self.camera.read()
         if ret:
-            self.captured_frame = frame
+            self.captured_frame = frame.copy()  # 保存原始帧的副本，不含标记
+            
             # 进行人脸检测和关键点提取
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = self.detector(gray)
             if len(faces) > 0:
                 self.landmarks = self.predictor(gray, faces[0])
-                # 在图像上绘制关键点
-                for n in range(68):
-                    x = self.landmarks.part(n).x
-                    y = self.landmarks.part(n).y
-                    cv2.circle(frame, (x, y), 3, (0, 0, 255), -1)
+                # 不再在图像上绘制关键点
             
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # 显示原始图像，不包含标记
+            frame_rgb = cv2.cvtColor(self.captured_frame, cv2.COLOR_BGR2RGB)
             h, w, ch = frame_rgb.shape
             bytes_per_line = ch * w
             qt_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
@@ -149,8 +147,8 @@ class RecognitionPage(QWidget):
             info_text += f"数据类型: {frame.dtype}"
             self.info_label.setText(info_text)
 
-            # 存储捕获的图像到MainWindow
-            self.main_window.set_captured_image(frame)
+            # 存储捕获的图像到MainWindow（使用无标记的原始图像）
+            self.main_window.set_captured_image(self.captured_frame)
 
     def start_recognition(self):
         if self.captured_frame is not None and self.landmarks is not None:

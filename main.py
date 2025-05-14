@@ -29,9 +29,9 @@ class MainWindow(QMainWindow):
 
         # 创建导航栏
         nav_layout = QHBoxLayout()
-        self.recognition_btn = QPushButton("识别")
-        self.attack_btn = QPushButton("欺骗")
-        self.defense_btn = QPushButton("防御")
+        self.recognition_btn = QPushButton("视觉识别")
+        self.attack_btn = QPushButton("视觉攻击")
+        self.defense_btn = QPushButton("视觉防御")
 
         for btn in [self.recognition_btn, self.attack_btn, self.defense_btn]:
             btn.setMinimumHeight(40)
